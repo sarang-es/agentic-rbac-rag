@@ -3,7 +3,8 @@ from pydantic import BaseModel,Field
 from fastapi import FastAPI, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine
-from security import get_password_hash, verify_password
+from security import get_password_hash, verify_password, create_access_token, get_current_user
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 app = FastAPI(title="Secure Agentic RAG Backend")
 
@@ -35,22 +36,26 @@ class UserLogin(BaseModel):
 def read_root():
     return {"message": "Welcome to the Secure Agentic RAG API"}
 
+# 4. GET SECURE DOCUMENTS (Strictly Protected by JWT)
 @app.get("/api/v1/documents")
-def get_secure_documents(role: str = Query(..., description="The role of the current user")):
-    user_role = role.lower()
+def get_secure_documents(current_user: dict = Depends(get_current_user)):
+    user_role = current_user["role"].lower()
+    
     if user_role == "admin":
         return {
             "access_granted": True,
+            "user": current_user["username"],
             "data": "CONFIDENTIAL: Internal server configurations and master admin files."
         }
     elif user_role == "intern" or user_role == "user":
         return {
             "access_granted": True,
+            "user": current_user["username"],
             "data": "PUBLIC: Standard corporate onboarding documentation."
         }
     else:
         raise HTTPException(status_code=403, detail="Unauthorized: Role not recognized.")
-
+    
 @app.get("/api/v1/users/{user_id}")
 def get_user_profile(user_id: int):
     return {
@@ -109,22 +114,28 @@ def register_new_user(new_user: UserCreate, db: Session = Depends(get_db)):
         "username": db_user.username
     }
 
-# 2. USER LOGIN (Read from DB and Verify Hash)
+
+# 2. USER LOGIN (Read from DB, Verify Hash, and Mint Token)
 @app.post("/api/v1/login")
-def login_user(user_credentials: UserLogin, db: Session = Depends(get_db)):
+def login_user(user_credentials: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # 1. Fetch user from the database
     user = db.query(models.User).filter(models.User.username == user_credentials.username).first()
     
-    if not user:
-        raise HTTPException(status_code=403, detail="Invalid credentials")
+    # 2. Check if user exists and password math checks out (Combined for security)
+    if not user or not verify_password(user_credentials.password, user.hashed_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
         
-    is_password_correct = verify_password(user_credentials.password, user.hashed_password)
-    if not is_password_correct:
-        raise HTTPException(status_code=403, detail="Invalid credentials")
-        
-    return {
-        "status": "Success",
-        "message": f"Welcome back, {user.username}! Your password was verified."
-    }
+    # 3. Mint the JWT VIP Wristband
+    access_token = create_access_token(
+        data={"sub": user.username, "role": user.role}
+    )
+    
+    # 4. Return the standard OAuth2 JSON response
+    return {"access_token": access_token, "token_type": "bearer"}
 
 # 3. GET ALL USERS (Read from DB)
 @app.get("/api/v1/users")
