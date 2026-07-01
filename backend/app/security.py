@@ -70,3 +70,17 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         
     except JWTError:
         raise credentials_exception
+
+# --- Role to Clearance Level Mapping ---
+ROLE_LEVELS = {
+    "admin": 4,
+    "executive": 3,
+    "hr": 3,
+    "manager": 2,
+    "user": 1,
+    "intern": 1
+}
+
+def get_clearance_level(role: str) -> int:
+    """Translates a user role string to an integer clearance level (1-4)."""
+    return ROLE_LEVELS.get(role.lower(), 1)
