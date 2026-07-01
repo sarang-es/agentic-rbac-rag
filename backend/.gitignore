@@ -1,6 +1,16 @@
-.env
-chroma_db/
-venv/
-__pycache__/
-*.pyc
+# Ignore SQLite databases
 *.db
+secure_app.db
+
+# Ignore local environment keys
+.env
+backend/.env
+
+# Ignore Python cache & virtual environment
+backend/venv/
+**/__pycache__/
+*.pyc
+
+# Ignore Vector Database storage
+chroma_db/
+../chroma_db/
