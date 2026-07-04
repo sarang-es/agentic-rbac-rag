@@ -14,3 +14,6 @@ backend/venv/
 # Ignore Vector Database storage
 chroma_db/
 ../chroma_db/
+
+#ignore Uploads folder
+uploads/

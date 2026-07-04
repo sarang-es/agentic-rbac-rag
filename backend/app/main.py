@@ -1,9 +1,9 @@
-import models
+from . import models
 from pydantic import BaseModel,Field
 from fastapi import FastAPI, HTTPException, Query, Depends, File, UploadFile, Form
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine
-from security import get_password_hash, verify_password, create_access_token, get_current_user, get_clearance_level
+from .database import SessionLocal, engine
+from .security import get_password_hash, verify_password, create_access_token, get_current_user, get_clearance_level
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 import os
 import io
@@ -15,13 +15,16 @@ from langchain_groq import ChatGroq
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_core.documents import Document
 
-load_dotenv()
+BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHROMA_DIR = os.path.join(BACKEND_DIR, "chroma_db")
+
+load_dotenv(os.path.join(BACKEND_DIR, ".env"))
 
 app = FastAPI(title="Secure Agentic RAG Backend")
 
 # --- NEW AI INITIALIZATION ---
 embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-db = Chroma(persist_directory="../chroma_db", embedding_function=embedding_function)
+db = Chroma(persist_directory=CHROMA_DIR, embedding_function=embedding_function)
 llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0.2)
 
 # Create database tables automatically if they don't exist
@@ -219,8 +222,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Document contains no text content.")
     
     # Save the file to disk in the backend/uploads directory
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    upload_dir = os.path.join(backend_dir, "uploads")
+    upload_dir = os.path.join(BACKEND_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     file_path = os.path.join(upload_dir, filename)
     with open(file_path, "wb") as f:
@@ -273,9 +275,16 @@ async def chat_with_ai(request: ChatRequest, current_user: dict = Depends(get_cu
         # Search the database for matching chunks filtered by user clearance level
         docs = db.similarity_search(
             request.query,
-            k=4,
+            k=8,
             filter={"clearance_level": {"$lte": user_level}}
         )
+        
+        # TEMP DEBUG — remove after checking
+        print(f"\n=== Retrieved {len(docs)} chunks for query: '{request.query}' ===")
+        for i, d in enumerate(docs):
+            print(f"--- Chunk {i+1} | source: {d.metadata.get('source')} | clearance: {d.metadata.get('clearance_level')} ---")
+            print(d.page_content)
+            print()
         
         context_parts = []
         for i, doc in enumerate(docs):
