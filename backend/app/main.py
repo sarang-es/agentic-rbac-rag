@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_groq import ChatGroq
-from langchain_text_splitters import CharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
 BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +37,11 @@ def get_db():
         yield db
     finally:        
         db.close()
+        
+#checking whether the user is admin        
+def require_admin(current_user: dict):
+    if current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden: Admin access required.")
 
 # --- Pydantic Models (Network Inbound Validation) ---
 class UserCreate(BaseModel):
@@ -229,7 +234,7 @@ async def upload_document(
         f.write(file_bytes)
         
     # Split text into chunks
-    text_splitter = CharacterTextSplitter(separator="\n", chunk_size=200, chunk_overlap=20)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = text_splitter.split_text(text_content)
     
     # Create Langchain documents with metadata
@@ -311,3 +316,111 @@ async def chat_with_ai(request: ChatRequest, current_user: dict = Depends(get_cu
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+@app.delete("/api/v1/documents")
+def delete_all_documents(
+    current_user: dict = Depends(get_current_user),
+    db_session: Session = Depends(get_db)
+):
+    require_admin(current_user)
+    
+    # Delete all vectors from ChromaDB
+    all_data = db._collection.get()
+    all_ids = all_data.get("ids", [])
+    if all_ids:
+        db._collection.delete(ids=all_ids)
+    
+    # Delete all rows from SQLite
+    deleted_count = db_session.query(models.UploadedDocument).delete()
+    db_session.commit()
+    
+    return {
+        "status": "Success",
+        "message": "All documents deleted from vector store and database.",
+        "sql_rows_deleted": deleted_count,
+        "chroma_chunks_deleted": len(all_ids)
+    }
+    
+    
+@app.delete("/api/v1/documents/{document_id}")
+def delete_one_document(
+    document_id: int,
+    current_user: dict = Depends(get_current_user),
+    db_session: Session = Depends(get_db)
+):
+    require_admin(current_user)
+    
+    # Find the document in SQLite first, to get its filename
+    doc = db_session.query(models.UploadedDocument).filter(
+        models.UploadedDocument.id == document_id
+    ).first()
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    
+    filename = doc.filename
+    
+    # Delete matching chunks from ChromaDB (matched by "source" metadata)
+    matches = db._collection.get(where={"source": filename})
+    match_ids = matches.get("ids", [])
+    if match_ids:
+        db._collection.delete(ids=match_ids)
+    
+    # Delete the row from SQLite
+    db_session.delete(doc)
+    db_session.commit()
+    
+    return {
+        "status": "Success",
+        "message": f"Document '{filename}' (id={document_id}) deleted from both stores.",
+        "chroma_chunks_deleted": len(match_ids)
+    }
+    
+@app.delete("/api/v1/users")
+def delete_all_users(
+    current_user: dict = Depends(get_current_user),
+    db_session: Session = Depends(get_db)
+):
+    require_admin(current_user)
+    
+    deleted_count = db_session.query(models.User).delete()
+    db_session.commit()
+    
+    return {
+        "status": "Success",
+        "message": "All users deleted.",
+        "users_deleted": deleted_count
+    }
+
+@app.delete("/api/v1/users/{user_id}")
+def delete_one_user(
+    user_id: int,
+    current_user: dict = Depends(get_current_user),
+    db_session: Session = Depends(get_db)
+):
+    require_admin(current_user)
+    
+    user = db_session.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    
+    db_session.delete(user)
+    db_session.commit()
+    
+    return {
+        "status": "Success",
+        "message": f"User '{user.username}' (id={user_id}) deleted."
+    }
+    
+    
+# remove after testing 
+@app.get("/debug/chunks/{filename}")
+def debug_chunks(filename: str):
+    results = db._collection.get(where={"source": filename})
+    chunks = results.get("documents", [])
+    return {
+        "filename": filename,
+        "total_chunks": len(chunks),
+        "chunks": chunks
+    }
